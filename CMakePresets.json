@@ -1,0 +1,75 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "generator": "Ninja"
+    },
+    {
+      "name": "host-macos-gcc15",
+      "inherits": "base",
+      "displayName": "macOS host (MacPorts GCC 15)",
+      "description": "Native build for local development/testing on macOS. Apple Clang has no C++26 support, so this pins MacPorts' g++-mp-15 instead of a cross toolchain file.",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "/opt/local/bin/gcc-mp-15",
+        "CMAKE_CXX_COMPILER": "/opt/local/bin/g++-mp-15"
+      }
+    },
+    {
+      "name": "linux-x86_64-gcc",
+      "inherits": "base",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/linux-x86_64-gcc.cmake"
+    },
+    {
+      "name": "linux-x86_64-clang",
+      "inherits": "base",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/linux-x86_64-clang.cmake"
+    },
+    {
+      "name": "linux-x86_32-gcc",
+      "inherits": "base",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/linux-x86_32-gcc.cmake"
+    },
+    {
+      "name": "linux-arm64-gnu",
+      "inherits": "base",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/linux-arm64-gnu.cmake"
+    },
+    {
+      "name": "linux-arm32-gnueabihf",
+      "inherits": "base",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/linux-arm32-gnueabihf.cmake"
+    }
+  ],
+  "buildPresets": [
+    { "name": "host-macos-gcc15-debug",      "configurePreset": "host-macos-gcc15",      "configuration": "Debug" },
+    { "name": "host-macos-gcc15-release",    "configurePreset": "host-macos-gcc15",      "configuration": "Release" },
+    { "name": "linux-x86_64-gcc-debug",      "configurePreset": "linux-x86_64-gcc",      "configuration": "Debug" },
+    { "name": "linux-x86_64-gcc-release",    "configurePreset": "linux-x86_64-gcc",      "configuration": "Release" },
+    { "name": "linux-x86_64-clang-debug",    "configurePreset": "linux-x86_64-clang",    "configuration": "Debug" },
+    { "name": "linux-x86_64-clang-release",  "configurePreset": "linux-x86_64-clang",    "configuration": "Release" },
+    { "name": "linux-x86_32-gcc-debug",      "configurePreset": "linux-x86_32-gcc",      "configuration": "Debug" },
+    { "name": "linux-x86_32-gcc-release",    "configurePreset": "linux-x86_32-gcc",      "configuration": "Release" },
+    { "name": "linux-arm64-gnu-release",     "configurePreset": "linux-arm64-gnu",       "configuration": "Release" },
+    { "name": "linux-arm32-gnueabihf-release","configurePreset": "linux-arm32-gnueabihf","configuration": "Release" }
+  ],
+  "testPresets": [
+    {
+      "name": "host-macos-gcc15-debug",
+      "configurePreset": "host-macos-gcc15",
+      "configuration": "Debug"
+    },
+    {
+      "name": "linux-x86_64-gcc-debug",
+      "configurePreset": "linux-x86_64-gcc",
+      "configuration": "Debug"
+    },
+    {
+      "name": "linux-x86_32-gcc-debug",
+      "configurePreset": "linux-x86_32-gcc",
+      "configuration": "Debug"
+    }
+  ]
+}

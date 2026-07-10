@@ -1,0 +1,32 @@
+# Build output
+/build/
+compile_commands.json
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+
+# Compiled objects and libraries
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.gch
+*.pch
+
+# Example binaries (built via examples/Makefile)
+examples/main
+examples/*.dSYM/
+
+# Editor/tooling caches
+.cache/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
