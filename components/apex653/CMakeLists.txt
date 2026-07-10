@@ -1,3 +1,5 @@
+find_package(Threads REQUIRED)
+
 add_library(apex653 STATIC
     src/apexFileSystem.cpp
 )
@@ -6,5 +8,7 @@ add_library(apex653::apex653 ALIAS apex653)
 target_include_directories(apex653 PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include/h/apex
 )
+
+target_link_libraries(apex653 PUBLIC Threads::Threads)
 
 apex653_set_warnings(apex653)

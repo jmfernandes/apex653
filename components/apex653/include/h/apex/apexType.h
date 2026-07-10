@@ -35,6 +35,12 @@ typedef enum RETURN_CODE_TYPE {
     TIMED_OUT = 6       ///< Time-out associated with the request expired.
 } RETURN_CODE_TYPE;
 
+typedef enum APEX_ACCESS_MODE_TYPE
+{
+    READ = 0,
+    READ_WRITE = 1
+} APEX_ACCESS_MODE_TYPE;
+
 #ifdef __cplusplus
 }
 #endif

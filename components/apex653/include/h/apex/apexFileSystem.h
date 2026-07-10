@@ -25,6 +25,45 @@ extern "C" {
 typedef char FILE_NAME_TYPE [MAX_FILE_NAME_LENGTH];
 typedef APEX_INTEGER FILE_ID_TYPE;
 typedef APEX_INTEGER FILE_ERRNO_TYPE;
+typedef APEX_LONG_INTEGER FILE_SIZE_TYPE;
+typedef APEX_ACCESS_MODE_TYPE FILE_MODE_TYPE;
+
+typedef enum
+{
+    UNSET = 0,
+    SET = 1
+} TIME_SET_TYPE;
+
+typedef struct
+{
+    APEX_INTEGER TM_SEC;
+    APEX_INTEGER TM_MIN;
+    APEX_INTEGER TM_HOUR;
+    APEX_INTEGER TM_MDAY;
+    APEX_INTEGER TM_MON;
+    APEX_INTEGER TM_YEAR;
+    APEX_INTEGER TM_WDAY;
+    APEX_INTEGER TM_YDAY;
+    APEX_INTEGER TM_ISDAT;
+    APEX_INTEGER TM_IS_SET;
+} COMPOSITE_TIME_TYPE;
+
+typedef struct
+{
+    COMPOSITE_TIME_TYPE CREATE_TIME;
+    COMPOSITE_TIME_TYPE LAST_UPDATE;
+    FILE_SIZE_TYPE POSITION;
+    FILE_SIZE_TYPE SIZE;
+    APEX_INTEGER NB_OF_CHANGES;
+    APEX_INTEGER NB_OF_WRITE_ERRORS;
+} FILE_STATUS_TYPE;
+
+/// @brief Initializes the APEX file system tables. Must be called exactly once.
+///
+/// @param[out] RETURN_CODE Status of the request.
+extern void apexFileSystemInit(
+    RETURN_CODE_TYPE* RETURN_CODE
+);
 
 /// @brief Creates and opens a new file for writing.
 ///
