@@ -20,6 +20,10 @@ typedef int64_t APEX_LONG_INTEGER;
 typedef uint8_t APEX_BYTE;
 typedef char APEX_CHAR;
 
+typedef APEX_BYTE* MESSAGE_ADDR_TYPE;
+typedef APEX_INTEGER MESSAGE_SIZE_TYPE;
+typedef APEX_INTEGER MESSAGE_RANGE_TYPE;
+
 /// @brief ARINC 653 Part 2 §3.5 return codes, common to every APEX service.
 typedef enum RETURN_CODE_TYPE {
     NO_ERROR = 0,       ///< Request valid and performed.
