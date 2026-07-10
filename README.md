@@ -60,6 +60,18 @@ cmake --preset host-macos-gcc15
 cmake --build --preset host-macos-gcc15-debug
 ```
 
+## Generating documentation
+
+Header comments use [Doxygen](https://www.doxygen.nl) syntax, styled with the
+[Doxygen Awesome](https://github.com/jothepro/doxygen-awesome-css) theme (vendored under
+`docs/doxygen-awesome-css/`, pinned to v2.4.2). Requires `doxygen` on `PATH`
+(`brew install doxygen` or `sudo port install doxygen`):
+
+```sh
+doxygen docs/Doxyfile
+open build/docs/html/index.html
+```
+
 ## Layout
 
 - `components/apex653/include/h/apex/` — public C-linkage headers implementing the standard's
@@ -68,3 +80,4 @@ cmake --build --preset host-macos-gcc15-debug
 - `components/apex653/CMakeLists.txt` — builds the single `apex653` static library target
   (alias `apex653::apex653`).
 - `cmake/` — toolchain files and build helpers.
+- `docs/Doxyfile` — Doxygen configuration; output goes to `build/docs/` (gitignored).
