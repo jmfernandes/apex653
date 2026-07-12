@@ -1,7 +1,15 @@
 
 #include <apexFileSystem.h> // Declares APEX FileSystem API functions
+#include <apexPthreadUtils.h> // Declares PthreadPrioInheritMutex
+#include <sys/stat.h> // Defines fstat and struct stat
+#include <fcntl.h> // Defines file options and open
+#include <unistd.h> // Defines fsync and other POSIX system calls
+#include <atomic> // Defines std::atomic
 #include <cstring> // Defines memset
-#include <pthread.h> // Defines pthread_mutex_t
+#include <mutex> // Defines std::unique_lock, std::try_to_lock
+#include <optional> // Defines std::optional
+#include <ranges> // Defines std::views::split
+#include <string_view> // Defines std::string_view
 
 #define MAX_OPEN_FILES 128
 #define MAX_OPEN_DIRS 16
@@ -10,14 +18,16 @@ typedef struct
 {
     FILE_STATUS_TYPE status;
     FILE_MODE_TYPE mode;
-    FILE_ID_TYPE id;
+    FILE_ID_TYPE fd;
     APEX_INTEGER inUse;
     char fileName[MAX_FILE_NAME_LENGTH];
-    pthread_mutex_t mutex;
-} InternalFileEntry; 
+    PthreadPrioInheritMutex mutex;
+} InternalFileEntry;
 
+// Mutexes are constructed (with PTHREAD_PRIO_INHERIT) as part of this static array's own
+// initialization, before main() runs, so apexFileSystemInit only needs to reset table contents.
 static InternalFileEntry g_fileTable[MAX_OPEN_FILES];
-static int g_fileTableInit = 0;
+static std::atomic<bool> g_fileTableInit{false};
 
 void apexFileSystemInit(
     RETURN_CODE_TYPE* RETURN_CODE
@@ -28,31 +38,131 @@ void apexFileSystemInit(
         return;
     }
 
-    if (g_fileTableInit)
+    if (g_fileTableInit.load())
     {
         *RETURN_CODE = NO_ACTION;
         return;
     }
 
-    pthread_mutexattr_t mtxAttr;
-    pthread_mutexattr_init(&mtxAttr);
-    pthread_mutexattr_setprotocol(&mtxAttr, PTHREAD_PRIO_INHERIT);
-
-    for (int i = 0; i < MAX_OPEN_FILES; i++)
+    for (std::size_t i = 0; i < MAX_OPEN_FILES; i++)
     {
-        g_fileTable[i].id = -1;
+        g_fileTable[i].fd = -1;
         g_fileTable[i].mode = READ;
         memset(&g_fileTable[i].status, 0, sizeof(FILE_STATUS_TYPE));
         g_fileTable[i].status.CREATE_TIME.TM_IS_SET = UNSET;
         g_fileTable[i].status.LAST_UPDATE.TM_IS_SET = UNSET;
         g_fileTable[i].inUse = 0;
         g_fileTable[i].fileName[0] = '\0';
-        pthread_mutex_init(&g_fileTable[i].mutex, &mtxAttr);
     }
-    g_fileTableInit = 1;
+    g_fileTableInit.store(true);
 
-    pthread_mutexattr_destroy(&mtxAttr);
     *RETURN_CODE = NO_ERROR;
+    return;
+}
+
+static void getCurrentCompositeTime(COMPOSITE_TIME_TYPE* ct)
+{
+    time_t now = time(NULL);
+
+    if (now == static_cast<time_t>(-1))
+    {
+        // Time source not available
+        memset(ct, 0, sizeof(COMPOSITE_TIME_TYPE));
+        ct->TM_IS_SET = UNSET;
+        return;
+    }
+
+    struct tm tm_buf;
+    if (localtime_r(&now, &tm_buf) == NULL)
+    {
+        // Local time not available
+        memset(ct, 0, sizeof(COMPOSITE_TIME_TYPE));
+        ct->TM_IS_SET = UNSET;
+        return;
+    }
+
+    ct->TM_SEC = tm_buf.tm_sec;
+    ct->TM_MIN = tm_buf.tm_min;
+    ct->TM_HOUR = tm_buf.tm_hour;
+    ct->TM_MDAY = tm_buf.tm_mday;
+    ct->TM_MON = tm_buf.tm_mon;
+    ct->TM_YEAR = tm_buf.tm_year;
+    ct->TM_WDAY = tm_buf.tm_wday;
+    ct->TM_YDAY = tm_buf.tm_yday;
+    ct->TM_ISDST = tm_buf.tm_isdst;
+    ct->TM_IS_SET = SET;
+}
+
+inline void validateFilename(FILE_NAME_TYPE fileName, RETURN_CODE_TYPE* rc, FILE_ERRNO_TYPE* err, bool& isNominal)
+{
+    if (!isNominal)
+    {
+        /* skip */
+    }
+    else if (fileName == NULL || fileName[0] == '\0')
+    {
+        *rc = INVALID_PARAM;
+        *err = EINVAL; /* Invalid argument - ID: 22 */
+        isNominal = false;
+    }
+    else
+    {
+        const std::string_view name(fileName);
+        if (name.size() >= MAX_FILE_NAME_LENGTH)
+        {
+            *rc = INVALID_PARAM;
+            *err = ENAMETOOLONG; /* Name too long - ID: 36 */
+            isNominal = false;
+        }
+        else if (name.front() != '/')
+        {
+            *rc = INVALID_PARAM;
+            *err = EINVAL; /* Invalid argument - ID: 22 */
+            isNominal = false;
+        }
+        else
+        {
+            /* Check max directory component length */
+            for (const auto component : name | std::views::split('/'))
+            {
+                const std::string_view piece(component.begin(), component.end());
+                if (isNominal && piece.size() >= MAX_DIRECTORY_ENTRY_LENGTH)
+                {
+                    *rc = INVALID_PARAM;
+                    *err = ENAMETOOLONG; /* Name too long - ID: 36 */
+                    isNominal = false;
+                }
+            }
+        }
+    }
+    return;
+}
+
+inline void checkFileInit(RETURN_CODE_TYPE* rc, FILE_ERRNO_TYPE* err, bool& isNominal)
+{
+    if (isNominal && !g_fileTableInit.load())
+    {
+        if (err != NULL)
+        {
+            *err = EACCES;
+        }
+        *rc = INVALID_MODE;
+        isNominal = false;
+    }
+    return;
+}
+
+inline void checkNullParameters(RETURN_CODE_TYPE* rc, FILE_ERRNO_TYPE* err, bool& isNominal)
+{
+    if (NULL == rc)
+    {
+        isNominal = false;
+    }
+    if (isNominal && NULL == err)
+    {
+        *rc = INVALID_PARAM;
+        isNominal = false;
+    }
     return;
 }
 
@@ -61,9 +171,132 @@ void OPEN_NEW_FILE(FILE_NAME_TYPE FILE_NAME,
     RETURN_CODE_TYPE *RETURN_CODE,
     FILE_ERRNO_TYPE *ERRNO)
 {
-    *FILE_ID = -1;
-    *RETURN_CODE = NO_ERROR;
-    *ERRNO = 0;
+    /* --- Parameter Validation -------------------------------------------- */
+    bool isNominal = true;
+    checkNullParameters(RETURN_CODE, ERRNO, isNominal);
+    checkFileInit(RETURN_CODE, ERRNO, isNominal);
+    validateFilename(FILE_NAME, RETURN_CODE, ERRNO, isNominal);
+
+    if (isNominal && (FILE_ID == NULL))
+    {
+        *RETURN_CODE = INVALID_PARAM;
+        isNominal = false;
+    }
+    
+    /* --- Entry Validation ------------------------------------------------ */
+    std::optional<std::size_t> slot;
+    if (isNominal)
+    {
+        if (FILE_ID != NULL)
+        {
+            *FILE_ID = -1;
+        }
+
+        for (std::size_t i = 0; i < MAX_OPEN_FILES; i++)
+        {
+            // Scope to ensure destructor is called between iterations of the for loop.
+            // continue keyword does not break scope.
+            {
+                std::unique_lock<PthreadPrioInheritMutex> candidate(g_fileTable[i].mutex, std::try_to_lock);
+                if (!candidate.owns_lock())
+                {
+                    continue; // Slot is contended
+                }
+                if (g_fileTable[i].inUse)
+                {
+                    continue; // Slot owns mutex but file is already opened
+                }
+
+                // Free slot found - candidate holds the lock for this iteration
+                InternalFileEntry* entry = &g_fileTable[i];
+                slot = i;
+
+                // This is a pre-open check that Linux kernel's open() won't distinguish.
+                // POSIX open returns EEXIST for both existing files and existing directories.
+                // The ARINC 653 spec requires EISDIR for directories.
+                struct stat preStat;
+                if (stat(FILE_NAME, &preStat) == 0)
+                {
+                    if (S_ISDIR(preStat.st_mode))
+                    {
+                        *RETURN_CODE = INVALID_PARAM;
+                        *ERRNO = EISDIR; // Is a directory - ID: 21
+                    }
+                    else
+                    {
+                        *RETURN_CODE = INVALID_PARAM;
+                        *ERRNO = EEXIST; // File exists - ID: 17
+                    }
+                    isNominal = false;
+                }
+
+                /* --- File I/O -------------------------------------------- */
+                int fd = -1;
+                int savedErrno = errno;
+                if (isNominal)
+                {
+                    *ERRNO = 0;
+                    fd = open(FILE_NAME, O_RDWR | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+                    savedErrno = errno;
+                }
+                if (isNominal && fd >= 0)
+                {
+                    // Fill out data in the struct
+                    entry->fd = fd;
+                    entry->mode = READ_WRITE;
+                    strncpy(entry->fileName, FILE_NAME, MAX_FILE_NAME_LENGTH - 1);
+                    entry->fileName[MAX_FILE_NAME_LENGTH - 1] = '\0';
+                    memset(&entry->status, 0, sizeof(FILE_STATUS_TYPE));
+                    getCurrentCompositeTime(&entry->status.CREATE_TIME);
+                    getCurrentCompositeTime(&entry->status.LAST_UPDATE);
+                    entry->inUse = 1;
+                }
+
+                /* --- Result Processing ----------------------------------- */
+                if (isNominal && fd < 0)
+                {
+                    *ERRNO = static_cast<FILE_ERRNO_TYPE>(savedErrno);
+                    switch (savedErrno)
+                    {
+                        case ENOTDIR:
+                        case EISDIR:
+                        case EEXIST:
+                        case EROFS:
+                        case EINVAL:
+                        case ENAMETOOLONG:
+                            *RETURN_CODE = INVALID_PARAM;
+                            break;
+                        case EACCES:
+                        case ENOSPC:
+                            *RETURN_CODE = INVALID_CONFIG;
+                            break;
+                        case EIO:
+                            *RETURN_CODE = NOT_AVAILABLE;
+                            break;
+                        default:
+                            *RETURN_CODE = INVALID_PARAM;
+                            break;
+                    }
+                }
+                else if (isNominal)
+                {
+                    // Success case
+                    *RETURN_CODE = NO_ERROR;
+                    *ERRNO = 0;
+                    *FILE_ID = static_cast<FILE_ID_TYPE>(*slot);
+                }
+                break;
+            } // Destructor of unique_lock candidate object called here
+        }
+    }
+
+    // No free slot available.
+    if (isNominal && !slot.has_value())
+    {
+        *RETURN_CODE = INVALID_CONFIG;
+        *ERRNO = EMFILE; // Max files open - ID: 24
+    }
+
     return;
 }
 
@@ -71,8 +304,87 @@ void CLOSE_FILE(FILE_ID_TYPE FILE_ID,
     RETURN_CODE_TYPE *RETURN_CODE,
     FILE_ERRNO_TYPE* ERRNO)
 {
-    *RETURN_CODE = NO_ERROR;
-    *ERRNO = 0;
+    /* --- Parameter Validation -------------------------------------------- */
+    bool isNominal = true;
+    checkNullParameters(RETURN_CODE, ERRNO, isNominal);
+    checkFileInit(RETURN_CODE, ERRNO, isNominal);
+;
+
+    if (isNominal && (FILE_ID < 0 || FILE_ID >= MAX_OPEN_FILES)) {
+        *RETURN_CODE = INVALID_PARAM;
+        *ERRNO = EBADF; // Bad file descriptor - ID: 9
+        isNominal = false;
+    }
+
+    /* --- Entry Validation ------------------------------------------------ */
+    // Per ARINC 653 Part 2 Section 3.2.5.3:
+    // When FILE_ID has an operation in progress return NOT_AVAILABLE, EBUSY
+    // Use trylock instead of lock for this purpose.
+    InternalFileEntry* entry = NULL;
+    std::unique_lock<PthreadPrioInheritMutex> lock;
+    if (isNominal)
+    {
+        entry = &g_fileTable[FILE_ID];
+        lock = std::unique_lock<PthreadPrioInheritMutex>(entry->mutex, std::try_to_lock);
+        if (!lock.owns_lock())
+        {
+            *RETURN_CODE = NOT_AVAILABLE;
+            *ERRNO = EBUSY; // File is busy - ID: 16
+            isNominal = false;
+        }
+    }
+
+    // Guard against other threads that may have closed the file OR
+    // OPEN_FILE has not yet fully completed.
+    if (isNominal && !entry->inUse)
+    {
+        *RETURN_CODE = INVALID_PARAM;
+        *ERRNO = EBADF; // Bad file descriptor - ID: 9
+        isNominal = false;
+    }
+
+    /* --- File I/O -------------------------------------------------------- */
+    ssize_t result = -1;
+    int savedErrno = errno;
+    if (isNominal)
+    {
+        if (entry->mode == READ_WRITE)
+        {
+            fsync(entry->fd);
+        }
+
+        *ERRNO = 0;
+        result = close(entry->fd);
+        savedErrno = errno;
+
+        entry->fd = -1;
+        entry->fileName[0] = '\0';
+        entry->inUse = 0;
+    }
+
+    /* --- Result Processing ----------------------------------------------- */
+    if (isNominal && result != 0)
+    {
+        *ERRNO = static_cast<FILE_ERRNO_TYPE>(savedErrno);
+
+        switch(savedErrno)
+        {
+            case EIO:
+                *RETURN_CODE = NOT_AVAILABLE;
+                break;
+            default:
+                *RETURN_CODE = NOT_AVAILABLE;
+                break;
+        }
+    }
+    else if (isNominal)
+    {
+        // Success case
+        *RETURN_CODE = NO_ERROR;
+        *ERRNO = 0;
+    }
+
+    // Entry mutex lock's destructor runs here, unlock iff it acquired the mutex.
     return;
 }
 
