@@ -3,6 +3,7 @@
 #include <apexPthreadUtils.h> // Declares PthreadPrioInheritMutex
 #include <sys/stat.h> // Defines fstat and struct stat
 #include <fcntl.h> // Defines file options and open
+#include <dirent.h> // Defines DIR
 #include <unistd.h> // Defines fsync and other POSIX system calls
 #include <atomic> // Defines std::atomic
 #include <cstring> // Defines memset
@@ -10,6 +11,13 @@
 #include <optional> // Defines std::optional
 #include <ranges> // Defines std::views::split
 #include <string_view> // Defines std::string_view
+#include <type_traits> // Defines std::is_trivially_copyable_v
+
+// This file zeroes these types with memset (see below) instead of assigning a value-initialized
+// instance, which is only safe if they have no vtable, no non-trivial constructor, and no member
+// that owns a resource. Enforce that assumption at compile time instead of relying on it silently.
+static_assert(std::is_trivially_copyable_v<FILE_STATUS_TYPE>);
+static_assert(std::is_trivially_copyable_v<COMPOSITE_TIME_TYPE>);
 
 #define MAX_OPEN_FILES 128
 #define MAX_OPEN_DIRS 16
@@ -24,10 +32,21 @@ typedef struct
     PthreadPrioInheritMutex mutex;
 } InternalFileEntry;
 
+typedef struct
+{
+    DIR* dir;
+    DIRECTORY_ID_TYPE id;
+    APEX_INTEGER inUse;
+    char dirName[MAX_FILE_NAME_LENGTH];
+    PthreadPrioInheritMutex mutex;
+} InternalDirEntry;
+
 // Mutexes are constructed (with PTHREAD_PRIO_INHERIT) as part of this static array's own
 // initialization, before main() runs, so apexFileSystemInit only needs to reset table contents.
 static InternalFileEntry g_fileTable[MAX_OPEN_FILES];
+static InternalDirEntry g_dirTable[MAX_OPEN_DIRS];
 static std::atomic<bool> g_fileTableInit{false};
+static std::atomic<bool> g_dirTableInit{false};
 
 void apexFileSystemInit(
     RETURN_CODE_TYPE* RETURN_CODE
@@ -38,7 +57,7 @@ void apexFileSystemInit(
         return;
     }
 
-    if (g_fileTableInit.load())
+    if (g_fileTableInit.load() && g_dirTableInit.load())
     {
         *RETURN_CODE = NO_ACTION;
         return;
@@ -55,6 +74,15 @@ void apexFileSystemInit(
         g_fileTable[i].fileName[0] = '\0';
     }
     g_fileTableInit.store(true);
+
+    for (std::size_t i = 0; i < MAX_OPEN_DIRS; i++)
+    {
+        g_dirTable[i].dir = NULL;
+        g_dirTable[i].id = -1;
+        g_dirTable[i].inUse = 0;
+        g_dirTable[i].dirName[0] = '\0';
+    }
+    g_dirTableInit.store(true);
 
     *RETURN_CODE = NO_ERROR;
     return;
@@ -168,6 +196,47 @@ void checkNullParameters(RETURN_CODE_TYPE* rc, FILE_ERRNO_TYPE* err, bool& isNom
     return;
 }
 
+// Satisfied by any internal table entry (InternalFileEntry, InternalDirEntry, ...) that follows
+// this file's per-slot locking convention: a PthreadPrioInheritMutex to try-lock, and an inUse
+// flag to test once the lock is held.
+template <typename Entry>
+concept TableEntry = requires(Entry& entry) {
+    { entry.mutex } -> std::same_as<PthreadPrioInheritMutex&>;
+    { entry.inUse } -> std::convertible_to<bool>;
+};
+
+// A free slot found by findFreeSlot, still holding that slot's lock. The mutex is released when
+// this (or the std::unique_lock inside it) goes out of scope.
+template <TableEntry Entry>
+struct FreeSlot
+{
+    std::size_t index;
+    std::unique_lock<PthreadPrioInheritMutex> lock;
+};
+
+// Scans table[0, count) for a slot that is both uncontended (try-lock succeeds) and not in use,
+// returning it still locked so the caller can fill it in without another thread racing in
+// between finding the slot and claiming it. Shared by OPEN_NEW_FILE today and intended for an
+// equivalent directory-open function later — both g_fileTable and g_dirTable satisfy TableEntry.
+template <TableEntry Entry>
+std::optional<FreeSlot<Entry>> findFreeSlot(Entry* table, std::size_t count)
+{
+    for (std::size_t i = 0; i < count; i++)
+    {
+        std::unique_lock<PthreadPrioInheritMutex> candidate(table[i].mutex, std::try_to_lock);
+        if (!candidate.owns_lock())
+        {
+            continue; // Slot is contended
+        }
+        if (table[i].inUse)
+        {
+            continue; // Slot owns mutex but entry is already in use
+        }
+        return FreeSlot<Entry>{i, std::move(candidate)};
+    }
+    return std::nullopt;
+}
+
 } // namespace
 
 void OPEN_NEW_FILE(FILE_NAME_TYPE FILE_NAME,
@@ -196,102 +265,87 @@ void OPEN_NEW_FILE(FILE_NAME_TYPE FILE_NAME,
             *FILE_ID = -1;
         }
 
-        for (std::size_t i = 0; i < MAX_OPEN_FILES; i++)
+        if (auto found = findFreeSlot(g_fileTable, static_cast<std::size_t>(MAX_OPEN_FILES)))
         {
-            // Scope to ensure destructor is called between iterations of the for loop.
-            // continue keyword does not break scope.
+            auto& [i, candidate] = *found; // candidate stays locked for the rest of this block
+            InternalFileEntry* entry = &g_fileTable[i];
+            slot = i;
+
+            // This is a pre-open check that Linux kernel's open() won't distinguish.
+            // POSIX open returns EEXIST for both existing files and existing directories.
+            // The ARINC 653 spec requires EISDIR for directories.
+            struct stat preStat;
+            if (stat(FILE_NAME, &preStat) == 0)
             {
-                std::unique_lock<PthreadPrioInheritMutex> candidate(g_fileTable[i].mutex, std::try_to_lock);
-                if (!candidate.owns_lock())
+                if (S_ISDIR(preStat.st_mode))
                 {
-                    continue; // Slot is contended
+                    *RETURN_CODE = INVALID_PARAM;
+                    *ERRNO = EISDIR; // Is a directory - ID: 21
                 }
-                if (g_fileTable[i].inUse)
+                else
                 {
-                    continue; // Slot owns mutex but file is already opened
+                    *RETURN_CODE = INVALID_PARAM;
+                    *ERRNO = EEXIST; // File exists - ID: 17
                 }
+                isNominal = false;
+            }
 
-                // Free slot found - candidate holds the lock for this iteration
-                InternalFileEntry* entry = &g_fileTable[i];
-                slot = i;
+            /* --- File I/O -------------------------------------------- */
+            int fd = -1;
+            int savedErrno = errno;
+            if (isNominal)
+            {
+                *ERRNO = 0;
+                fd = open(FILE_NAME, O_RDWR | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+                savedErrno = errno;
+            }
+            if (isNominal && fd >= 0)
+            {
+                // Fill out data in the struct
+                entry->fd = fd;
+                entry->mode = READ_WRITE;
+                strncpy(entry->fileName, FILE_NAME, MAX_FILE_NAME_LENGTH - 1);
+                entry->fileName[MAX_FILE_NAME_LENGTH - 1] = '\0';
+                memset(&entry->status, 0, sizeof(FILE_STATUS_TYPE));
+                getCurrentCompositeTime(&entry->status.CREATE_TIME);
+                getCurrentCompositeTime(&entry->status.LAST_UPDATE);
+                entry->inUse = 1;
+            }
 
-                // This is a pre-open check that Linux kernel's open() won't distinguish.
-                // POSIX open returns EEXIST for both existing files and existing directories.
-                // The ARINC 653 spec requires EISDIR for directories.
-                struct stat preStat;
-                if (stat(FILE_NAME, &preStat) == 0)
+            /* --- Result Processing ----------------------------------- */
+            if (isNominal && fd < 0)
+            {
+                *ERRNO = static_cast<FILE_ERRNO_TYPE>(savedErrno);
+                switch (savedErrno)
                 {
-                    if (S_ISDIR(preStat.st_mode))
-                    {
+                    case ENOTDIR:
+                    case EISDIR:
+                    case EEXIST:
+                    case EROFS:
+                    case EINVAL:
+                    case ENAMETOOLONG:
                         *RETURN_CODE = INVALID_PARAM;
-                        *ERRNO = EISDIR; // Is a directory - ID: 21
-                    }
-                    else
-                    {
+                        break;
+                    case EACCES:
+                    case ENOSPC:
+                        *RETURN_CODE = INVALID_CONFIG;
+                        break;
+                    case EIO:
+                        *RETURN_CODE = NOT_AVAILABLE;
+                        break;
+                    default:
                         *RETURN_CODE = INVALID_PARAM;
-                        *ERRNO = EEXIST; // File exists - ID: 17
-                    }
-                    isNominal = false;
+                        break;
                 }
-
-                /* --- File I/O -------------------------------------------- */
-                int fd = -1;
-                int savedErrno = errno;
-                if (isNominal)
-                {
-                    *ERRNO = 0;
-                    fd = open(FILE_NAME, O_RDWR | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
-                    savedErrno = errno;
-                }
-                if (isNominal && fd >= 0)
-                {
-                    // Fill out data in the struct
-                    entry->fd = fd;
-                    entry->mode = READ_WRITE;
-                    strncpy(entry->fileName, FILE_NAME, MAX_FILE_NAME_LENGTH - 1);
-                    entry->fileName[MAX_FILE_NAME_LENGTH - 1] = '\0';
-                    memset(&entry->status, 0, sizeof(FILE_STATUS_TYPE));
-                    getCurrentCompositeTime(&entry->status.CREATE_TIME);
-                    getCurrentCompositeTime(&entry->status.LAST_UPDATE);
-                    entry->inUse = 1;
-                }
-
-                /* --- Result Processing ----------------------------------- */
-                if (isNominal && fd < 0)
-                {
-                    *ERRNO = static_cast<FILE_ERRNO_TYPE>(savedErrno);
-                    switch (savedErrno)
-                    {
-                        case ENOTDIR:
-                        case EISDIR:
-                        case EEXIST:
-                        case EROFS:
-                        case EINVAL:
-                        case ENAMETOOLONG:
-                            *RETURN_CODE = INVALID_PARAM;
-                            break;
-                        case EACCES:
-                        case ENOSPC:
-                            *RETURN_CODE = INVALID_CONFIG;
-                            break;
-                        case EIO:
-                            *RETURN_CODE = NOT_AVAILABLE;
-                            break;
-                        default:
-                            *RETURN_CODE = INVALID_PARAM;
-                            break;
-                    }
-                }
-                else if (isNominal)
-                {
-                    // Success case
-                    *RETURN_CODE = NO_ERROR;
-                    *ERRNO = 0;
-                    *FILE_ID = static_cast<FILE_ID_TYPE>(*slot);
-                }
-                break;
-            } // Destructor of unique_lock candidate object called here
-        }
+            }
+            else if (isNominal)
+            {
+                // Success case
+                *RETURN_CODE = NO_ERROR;
+                *ERRNO = 0;
+                *FILE_ID = static_cast<FILE_ID_TYPE>(*slot);
+            }
+        } // Destructor of found->lock releases the mutex here
     }
 
     // No free slot available.
