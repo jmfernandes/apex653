@@ -60,7 +60,9 @@ void apexFileSystemInit(
     return;
 }
 
-static void getCurrentCompositeTime(COMPOSITE_TIME_TYPE* ct)
+namespace {
+
+void getCurrentCompositeTime(COMPOSITE_TIME_TYPE* ct)
 {
     time_t now = time(NULL);
 
@@ -93,7 +95,7 @@ static void getCurrentCompositeTime(COMPOSITE_TIME_TYPE* ct)
     ct->TM_IS_SET = SET;
 }
 
-inline void validateFilename(FILE_NAME_TYPE fileName, RETURN_CODE_TYPE* rc, FILE_ERRNO_TYPE* err, bool& isNominal)
+void validateFilename(FILE_NAME_TYPE fileName, RETURN_CODE_TYPE* rc, FILE_ERRNO_TYPE* err, bool& isNominal)
 {
     if (!isNominal)
     {
@@ -138,7 +140,7 @@ inline void validateFilename(FILE_NAME_TYPE fileName, RETURN_CODE_TYPE* rc, FILE
     return;
 }
 
-inline void checkFileInit(RETURN_CODE_TYPE* rc, FILE_ERRNO_TYPE* err, bool& isNominal)
+void checkFileInit(RETURN_CODE_TYPE* rc, FILE_ERRNO_TYPE* err, bool& isNominal)
 {
     if (isNominal && !g_fileTableInit.load())
     {
@@ -152,7 +154,7 @@ inline void checkFileInit(RETURN_CODE_TYPE* rc, FILE_ERRNO_TYPE* err, bool& isNo
     return;
 }
 
-inline void checkNullParameters(RETURN_CODE_TYPE* rc, FILE_ERRNO_TYPE* err, bool& isNominal)
+void checkNullParameters(RETURN_CODE_TYPE* rc, FILE_ERRNO_TYPE* err, bool& isNominal)
 {
     if (NULL == rc)
     {
@@ -165,6 +167,8 @@ inline void checkNullParameters(RETURN_CODE_TYPE* rc, FILE_ERRNO_TYPE* err, bool
     }
     return;
 }
+
+} // namespace
 
 void OPEN_NEW_FILE(FILE_NAME_TYPE FILE_NAME,
     FILE_ID_TYPE *FILE_ID,
