@@ -18,9 +18,29 @@
       }
     },
     {
+      "name": "host-macos-gcc15-asan",
+      "inherits": "host-macos-gcc15",
+      "displayName": "macOS host (MacPorts GCC 15) + ASan/UBSan",
+      "description": "Same toolchain as host-macos-gcc15, instrumented with AddressSanitizer + UndefinedBehaviorSanitizer to catch memory errors and undefined behavior at runtime. Dev/test only, not for release builds.",
+      "cacheVariables": {
+        "CMAKE_CXX_FLAGS_INIT": "-fsanitize=address,undefined -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS_INIT": "-fsanitize=address,undefined"
+      }
+    },
+    {
       "name": "linux-x86_64-gcc",
       "inherits": "base",
       "toolchainFile": "${sourceDir}/cmake/toolchains/linux-x86_64-gcc.cmake"
+    },
+    {
+      "name": "linux-x86_64-gcc-tsan",
+      "inherits": "linux-x86_64-gcc",
+      "displayName": "Linux x86_64, GCC + ThreadSanitizer",
+      "description": "Same toolchain as linux-x86_64-gcc, instrumented with ThreadSanitizer to catch data races at runtime. Cannot be combined with ASan/UBSan in the same binary. Dev/test only. (MacPorts GCC 15's macOS build has no libtsan runtime, so this is Linux-only.)",
+      "cacheVariables": {
+        "CMAKE_CXX_FLAGS_INIT": "-fsanitize=thread -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS_INIT": "-fsanitize=thread"
+      }
     },
     {
       "name": "linux-x86_64-clang",
@@ -46,8 +66,10 @@
   "buildPresets": [
     { "name": "host-macos-gcc15-debug",      "configurePreset": "host-macos-gcc15",      "configuration": "Debug" },
     { "name": "host-macos-gcc15-release",    "configurePreset": "host-macos-gcc15",      "configuration": "Release" },
+    { "name": "host-macos-gcc15-asan-debug", "configurePreset": "host-macos-gcc15-asan", "configuration": "Debug" },
     { "name": "linux-x86_64-gcc-debug",      "configurePreset": "linux-x86_64-gcc",      "configuration": "Debug" },
     { "name": "linux-x86_64-gcc-release",    "configurePreset": "linux-x86_64-gcc",      "configuration": "Release" },
+    { "name": "linux-x86_64-gcc-tsan-debug", "configurePreset": "linux-x86_64-gcc-tsan", "configuration": "Debug" },
     { "name": "linux-x86_64-clang-debug",    "configurePreset": "linux-x86_64-clang",    "configuration": "Debug" },
     { "name": "linux-x86_64-clang-release",  "configurePreset": "linux-x86_64-clang",    "configuration": "Release" },
     { "name": "linux-x86_32-gcc-debug",      "configurePreset": "linux-x86_32-gcc",      "configuration": "Debug" },
