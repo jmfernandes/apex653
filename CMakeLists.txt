@@ -13,9 +13,15 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(warnings)
 
+option(APEX653_BUILD_TESTS "Build apex653 tests" ON)
 option(APEX653_BUILD_EXAMPLES "Build apex653 examples" OFF)
 
 add_subdirectory(components/apex653)
+
+if(APEX653_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
 
 if(APEX653_BUILD_EXAMPLES)
     add_subdirectory(examples)
