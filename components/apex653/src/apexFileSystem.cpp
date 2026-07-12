@@ -219,7 +219,7 @@ struct FreeSlot
 // between finding the slot and claiming it. Shared by OPEN_NEW_FILE today and intended for an
 // equivalent directory-open function later — both g_fileTable and g_dirTable satisfy TableEntry.
 template <TableEntry Entry>
-std::optional<FreeSlot<Entry>> findFreeSlot(Entry* table, std::size_t count)
+[[nodiscard]] std::optional<FreeSlot<Entry>> findFreeSlot(Entry* table, std::size_t count)
 {
     for (std::size_t i = 0; i < count; i++)
     {
