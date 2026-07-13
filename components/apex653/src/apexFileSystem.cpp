@@ -581,8 +581,110 @@ void WRITE_FILE(FILE_ID_TYPE FILE_ID,
     RETURN_CODE_TYPE *RETURN_CODE,
     FILE_ERRNO_TYPE *ERRNO)
 {
-    *RETURN_CODE = NO_ERROR;
-    *ERRNO = 0;
+    /* --- Parameter Validation -------------------------------------------- */
+    bool isNominal = true;
+    checkNullParameters(RETURN_CODE, ERRNO, isNominal);
+    checkFileInit(RETURN_CODE, ERRNO, isNominal);
+
+    if (isNominal && (FILE_ID < 0 || FILE_ID >= MAX_OPEN_FILES))
+    {
+        *RETURN_CODE = INVALID_PARAM;
+        *ERRNO = EBADF; // Bad file descriptor - ID: 9
+        isNominal = false;
+    }
+    else if (isNominal && (MESSAGE_ADDR == NULL || LENGTH <= 0))
+    {
+        *RETURN_CODE = INVALID_PARAM;
+        *ERRNO = EINVAL; // Invalid argument - ID: 22
+        isNominal = false;
+    }
+    else if (isNominal && LENGTH > MAX_ATOMICITY)
+    {
+        *RETURN_CODE = INVALID_PARAM;
+        *ERRNO = EFBIG; // File too large - ID: 27
+        isNominal = false;
+    }
+
+    /* --- Entry Validation ------------------------------------------------ */
+    // Per ARINC 653 Part 2 Section 3.2.5.3
+    // When FILE_ID has an operation in progress return NOT_AVAILABLE, EBUSY
+    // Use trylock instead of lock for this purpose.
+    InternalFileEntry* entry = NULL;
+    std::unique_lock<PthreadPrioInheritMutex> lock;
+
+    if (isNominal)
+    {
+        entry = &g_fileTable[FILE_ID];
+        lock = std::unique_lock<PthreadPrioInheritMutex>(entry->mutex, std::try_to_lock);
+        if (!lock.owns_lock())
+        {
+            *RETURN_CODE = NOT_AVAILABLE;
+            *ERRNO = EBUSY; // File is busy - ID: 16
+            isNominal = false;
+        }
+    }
+
+    // Guard against other threads that may have closed the file.
+    if (isNominal && !entry->inUse)
+    {
+        *RETURN_CODE = NOT_AVAILABLE;
+        *ERRNO = EACCES; // Bad file descriptor - ID: 9
+        isNominal = false;
+    }
+    if (isNominal && entry->mode == READ)
+    {
+        *RETURN_CODE = NOT_AVAILABLE;
+        *ERRNO = EACCES; // Permission denied - ID: 13
+        isNominal = false;
+    }
+
+    /* --- File I/O -------------------------------------------------------- */
+    ssize_t result = -1;
+    int savedErrno = errno;
+    if (isNominal)
+    {
+        *ERRNO = 0;
+        result = write(entry->fd, MESSAGE_ADDR, static_cast<size_t>(LENGTH));
+        savedErrno = errno;
+        entry->status.NB_OF_CHANGES++;
+        getCurrentCompositeTime(&entry->status.LAST_UPDATE);
+        if (result < 0)
+        {
+            // Per ARINC 653 spec, on write failure, both counters increment.
+            // The data may have been changeddue to a partial write.
+            entry-> status.NB_OF_WRITE_ERRORS++;
+        }
+    }
+
+    /* --- Result Processing ----------------------------------------------- */
+    if (isNominal && result < 0)
+    {
+        *ERRNO = static_cast<FILE_ERRNO_TYPE>(savedErrno);
+
+        switch (savedErrno)
+        {
+            case EBADF:
+            case EACCES:
+            case ENOSPC:
+            case EFBIG:
+                *RETURN_CODE = INVALID_PARAM;
+                break;
+            case EIO:
+                *RETURN_CODE = NOT_AVAILABLE;
+                break;
+            default:
+                *RETURN_CODE = NOT_AVAILABLE;
+                break;
+        }
+    }
+    else if (isNominal)
+    {
+        // Success case.
+        *RETURN_CODE = NO_ERROR;
+        *ERRNO = 0;
+    }
+    
+    // Entry mutex lock's destructor runs here, unlock iff it acquired the mutex.
     return;
 }
 
