@@ -688,6 +688,174 @@ void WRITE_FILE(FILE_ID_TYPE FILE_ID,
     return;
 }
 
+void SEEK_FILE(
+    FILE_ID_TYPE FILE_ID,
+    FILE_SIZE_TYPE OFFSET,
+    FILE_SEEK_TYPE WHENCE,
+    FILE_SIZE_TYPE* POSITION,
+    RETURN_CODE_TYPE* RETURN_CODE,
+    FILE_ERRNO_TYPE* ERRNO)
+{
+    /* --- Parameter Validation -------------------------------------------- */
+    bool isNominal = true;
+    checkNullParameters(RETURN_CODE, ERRNO, isNominal);
+    checkFileInit(RETURN_CODE, ERRNO, isNominal);
+
+    if (isNominal && (POSITION == NULL))
+    {
+        *RETURN_CODE = INVALID_PARAM;
+        isNominal = false;
+    }
+    else if (isNominal && WHENCE < 0)
+    {
+        *RETURN_CODE = INVALID_PARAM;
+        *ERRNO = EINVAL; // Invalid argument - ID: 22
+        isNominal = false;
+    }
+    else if (isNominal && (FILE_ID < 0 || FILE_ID >= MAX_OPEN_FILES))
+    {
+        *RETURN_CODE = INVALID_PARAM;
+        *ERRNO = EBADF; // BBad file descriptor - ID: 9
+        isNominal = false;
+    }
+
+    /* --- Entry Validation ------------------------------------------------ */
+    // Per ARINC 653 Part 2 Section 3.2.5.3:
+    // When FILE_ID has an operation in progress return NOT_AVAILABLE, EBUSY
+    // Use trylock instead of lock for this purpose.
+    InternalFileEntry* entry = NULL;
+    std::unique_lock<PthreadPrioInheritMutex> lock;
+
+    if (isNominal)
+    {
+        entry = &g_fileTable[FILE_ID];
+        lock = std::unique_lock<PthreadPrioInheritMutex>(entry->mutex, std::try_to_lock);
+        if (!lock.owns_lock())
+        {
+            *RETURN_CODE = NOT_AVAILABLE;
+            *ERRNO = EBUSY; // File is busy - ID: 16
+            isNominal = false;
+        }
+    }
+
+    // Guard against other threads that may have closed the file.
+    if (isNominal && !entry->inUse)
+    {
+        *RETURN_CODE = INVALID_PARAM;
+        *ERRNO = EBADF; // Bad file descriptor - ID: 9
+        isNominal = false;
+    }
+
+    // Per ARINC 653 Part 2 section 3.2.5.6:
+    // Position must be in the range [0, file SIZE]
+    FILE_SIZE_TYPE fileSize = 0;
+    if (isNominal)
+    {
+        struct stat st;
+        if (fstat(entry->fd, &st) != 0)
+        {
+            *RETURN_CODE = INVALID_PARAM;
+            *ERRNO = EIO; // IO error - ID: 5
+            isNominal = false;
+        }
+        else
+        {
+            fileSize = static_cast<FILE_SIZE_TYPE>(st.st_size);
+        }
+    }
+
+    if (isNominal)
+    {
+        off_t curPos = lseek(entry->fd, 0, SEEK_CUR);
+        FILE_SIZE_TYPE targetPos = -1;
+
+        switch (WHENCE)
+        {
+            case FROM_FILE_START:
+                targetPos = OFFSET;
+                break;
+            case FROM_FILE_CURRENT:
+                targetPos = static_cast<FILE_SIZE_TYPE>(curPos + OFFSET);
+                break;
+            case FROM_FILE_END:
+                targetPos = fileSize + OFFSET;
+                break;
+            default:
+                *RETURN_CODE = INVALID_PARAM;
+                *ERRNO = EINVAL; // Invalid argument - ID: 22
+                isNominal = false;
+        }
+
+        if (isNominal && (targetPos < 0 || targetPos > fileSize))
+        {
+            *RETURN_CODE = INVALID_PARAM;
+            *ERRNO = EINVAL; // Invalid argument - ID: 22
+            isNominal = false;
+        }
+    }
+
+    /* --- File I/O -------------------------------------------------------- */
+    off_t result = static_cast<off_t>(-1);
+    int savedErrno = errno;
+    if (POSITION != NULL)
+    {
+        *POSITION = -1;
+    }
+
+    if (isNominal)
+    {
+        // FILE_SEEK_TYPE's numeric values are deliberately different from POSIX's SEEK_* (to
+        // avoid colliding with <unistd.h>'s macros of the same name -- see FILE_SEEK_TYPE's
+        // definition), so WHENCE cannot be passed to lseek() directly; it must be translated to
+        // the POSIX constant lseek() actually expects.
+        int posixWhence = SEEK_SET;
+        switch (WHENCE)
+        {
+            case FROM_FILE_START:   posixWhence = SEEK_SET; break;
+            case FROM_FILE_CURRENT: posixWhence = SEEK_CUR; break;
+            case FROM_FILE_END:     posixWhence = SEEK_END; break;
+        }
+
+        // lseek repositions the file offset without performing any I/O.
+        // The kernel maintains one offset per file descriptor.
+        *ERRNO = 0;
+        result = lseek(entry->fd, static_cast<off_t>(OFFSET), posixWhence);
+        savedErrno = errno;
+    }
+
+    /* --- Result Processing ----------------------------------------------- */
+    if (isNominal && result == static_cast<off_t>(-1))
+    {
+        *ERRNO = static_cast<FILE_ERRNO_TYPE>(savedErrno);
+
+        switch (savedErrno)
+        {
+            case EBADF:
+            case EACCES:
+            case EINVAL:
+                *RETURN_CODE = INVALID_PARAM;
+                break;
+            case ESTALE:
+            case EIO:
+                *RETURN_CODE = NOT_AVAILABLE;
+                break;
+            default:
+                *RETURN_CODE = NOT_AVAILABLE;
+                break;
+        }
+    }
+    else if (isNominal)
+    {
+        // Success case.
+        *RETURN_CODE = NO_ERROR;
+        *ERRNO = 0;
+        *POSITION = static_cast<FILE_SIZE_TYPE>(result);
+    }
+
+    // Entry mutex lock's destructor runs here, unlock iff it acquired the mutex.
+    return;
+}
+
 void REMOVE_FILE(FILE_NAME_TYPE FILE_NAME,
     RETURN_CODE_TYPE *RETURN_CODE,
     FILE_ERRNO_TYPE *ERRNO)
@@ -756,6 +924,6 @@ void REMOVE_FILE(FILE_NAME_TYPE FILE_NAME,
         *RETURN_CODE = NO_ERROR;
         *ERRNO = 0;
     }
-    
+
     return;
 }

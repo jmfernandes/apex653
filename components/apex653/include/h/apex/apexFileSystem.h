@@ -35,6 +35,16 @@ typedef APEX_ACCESS_MODE_TYPE FILE_MODE_TYPE;
 typedef char DIRECTORY_ENTRY_TYPE[MAX_DIRECTORY_ENTRY_LENGTH];
 typedef APEX_INTEGER DIRECTORY_ID_TYPE;
 
+// Deliberately not named SEEK_SET/SEEK_CUR/SEEK_END: those are macros defined by <unistd.h>,
+// and reusing those names here is silently hijacked by the preprocessor in any translation unit
+// that includes both headers -- the compiler never even sees these as enum references.
+typedef enum
+{
+    FROM_FILE_START = 0,
+    FROM_FILE_CURRENT = 1,
+    FROM_FILE_END = 2
+} FILE_SEEK_TYPE;
+
 typedef enum
 {
     UNSET = 0,
@@ -106,6 +116,15 @@ extern void WRITE_FILE(
     FILE_ID_TYPE FILE_ID,
     MESSAGE_ADDR_TYPE MESSAGE_ADDR,
     MESSAGE_SIZE_TYPE LENGTH,
+    RETURN_CODE_TYPE* RETURN_CODE,
+    FILE_ERRNO_TYPE* ERRNO
+);
+
+extern void SEEK_FILE(
+    FILE_ID_TYPE FILE_ID,
+    FILE_SIZE_TYPE OFFSET,
+    FILE_SEEK_TYPE WHENCE,
+    FILE_SIZE_TYPE* POSITION,
     RETURN_CODE_TYPE* RETURN_CODE,
     FILE_ERRNO_TYPE* ERRNO
 );
