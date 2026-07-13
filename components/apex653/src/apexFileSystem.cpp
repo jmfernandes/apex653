@@ -692,7 +692,70 @@ void REMOVE_FILE(FILE_NAME_TYPE FILE_NAME,
     RETURN_CODE_TYPE *RETURN_CODE,
     FILE_ERRNO_TYPE *ERRNO)
 {
-    *RETURN_CODE = NO_ERROR;
-    *ERRNO = 0;
+    /* --- Parameter Validation -------------------------------------------- */
+    bool isNominal = true;
+    checkNullParameters(RETURN_CODE, ERRNO, isNominal);
+    checkFileInit(RETURN_CODE, ERRNO, isNominal);
+    validateFilename(FILE_NAME, RETURN_CODE, ERRNO, isNominal);
+
+    // Per ARINC 653 Part 2 Section 3.2.5.7:
+    // REMOVE_FILE shall return ERRNO = EPERM, RETURN_CODE = INVALID_PARAM when FILE_NAME is an existing directory
+    // However Linux standard C library unlink() returns EISDIR (non-POSIX value).
+    // Because of this we will check and skip unlink() if FILE_NAME is a directory.
+    if (isNominal)
+    {
+        struct stat st;
+        if (stat(FILE_NAME, &st) == 0 && S_ISDIR(st.st_mode))
+        {
+            *RETURN_CODE = INVALID_PARAM;
+            *ERRNO = EPERM;
+            isNominal = false;
+        }
+    }
+
+    /* --- File I/O -------------------------------------------------------- */
+    int result = -1;
+    int savedErrno = errno;
+    if (isNominal)
+    {
+        *ERRNO = 0;
+        result = unlink(FILE_NAME);
+        savedErrno = errno;
+    }
+
+    /* --- Result Processing ----------------------------------------------- */
+    if (isNominal && result != 0)
+    {
+        *ERRNO = static_cast<FILE_ERRNO_TYPE>(savedErrno);
+
+        switch (savedErrno)
+        {
+            case ENAMETOOLONG:
+            case EINVAL:
+            case ENOTDIR:
+            case EPERM:
+            case ENOENT:
+            case EROFS:
+                *RETURN_CODE = INVALID_PARAM;
+                break;
+            case EACCES:
+                *RETURN_CODE = INVALID_CONFIG;
+                break;
+            case EBUSY:
+            case EIO:
+                *RETURN_CODE = NOT_AVAILABLE;
+                break;
+            default:
+                *RETURN_CODE = INVALID_PARAM;
+                break;
+        }
+    }
+    else if (isNominal)
+    {
+        // Success case.
+        *RETURN_CODE = NO_ERROR;
+        *ERRNO = 0;
+    }
+    
     return;
 }
