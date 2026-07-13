@@ -20,6 +20,10 @@
 extern "C" {
 #endif
 
+#ifndef MAX_ATOMICITY
+#define MAX_ATOMICITY 0x7FFFF000
+#endif
+
 #define MAX_FILE_NAME_LENGTH PATH_MAX
 #define MAX_DIRECTORY_ENTRY_LENGTH 64 /* 63 char + null */
 

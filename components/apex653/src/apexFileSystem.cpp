@@ -453,9 +453,125 @@ void READ_FILE(FILE_ID_TYPE FILE_ID,
     RETURN_CODE_TYPE *RETURN_CODE,
     FILE_ERRNO_TYPE *ERRNO)
 {
-    *OUT_LENGTH = 0;
-    *RETURN_CODE = NO_ERROR;
-    *ERRNO = 0;
+    /* --- Parameter Validation -------------------------------------------- */
+    bool isNominal = true;
+    checkNullParameters(RETURN_CODE, ERRNO, isNominal);
+    checkFileInit(RETURN_CODE, ERRNO, isNominal);
+
+    if (isNominal && (FILE_ID < 0 || FILE_ID >= MAX_OPEN_FILES))
+    {
+        *RETURN_CODE = INVALID_PARAM;
+        *ERRNO = EBADF; // Bad file descriptor - ID: 9
+        isNominal = false;
+    }
+    else if (isNominal && OUT_LENGTH == NULL)   
+    {
+        *RETURN_CODE = INVALID_PARAM;
+        *ERRNO = EINVAL; // Invalid argument - ID: 22
+        isNominal = false;
+    }
+    else if (isNominal && MESSAGE_ADDR == NULL)
+    {
+        *RETURN_CODE = INVALID_PARAM;
+        *ERRNO = EINVAL; // Invalid argument - ID: 22
+        isNominal = false;
+    }
+    else if (isNominal && IN_LENGTH <= 0)
+    {
+        *RETURN_CODE = INVALID_PARAM;
+        *ERRNO = EINVAL; // Invalid argument - ID: 22
+        isNominal = false;
+    }
+    else if (isNominal && IN_LENGTH > MAX_ATOMICITY)
+    {
+        *RETURN_CODE = INVALID_PARAM;
+        *ERRNO = EFBIG; // File too large - ID: 27
+        isNominal = false;
+    }
+
+    /* --- Entry Validation ------------------------------------------------ */
+    // Per ARINC 653 Part 2 Section 3.2.5.3
+    // When FILE_ID has an operation in progress return NOT_AVAILABLE, EBUSY
+    // Use trylock instead of lock for this purpose.
+    InternalFileEntry* entry = NULL;
+    std::unique_lock<PthreadPrioInheritMutex> lock;
+
+    if (isNominal)
+    {
+        entry = &g_fileTable[FILE_ID];
+        lock = std::unique_lock<PthreadPrioInheritMutex>(entry->mutex, std::try_to_lock);
+        if (!lock.owns_lock())
+        {
+            *RETURN_CODE = NOT_AVAILABLE;
+            *ERRNO = EBUSY; // File is busy - ID: 16
+            isNominal = false;
+        }
+    }
+
+    // Guard against other threads that may have close the file.
+    if (isNominal && !entry->inUse)
+    {
+        *RETURN_CODE = INVALID_PARAM;
+        *ERRNO = EBADF; // Bad file descriptor - ID: 9
+        isNominal = false;
+    }
+
+    // Guard against RESIZE_FILE shrinking file before READ
+    if (isNominal)
+    {
+        off_t curPos = lseek(entry->fd, 0, SEEK_CUR);
+        struct stat st;
+        if (fstat(entry->fd, &st) == 0 && curPos > st.st_size)
+        {
+            *RETURN_CODE = NOT_AVAILABLE;
+            *ERRNO = EOVERFLOW; // Position greater than file size - ID: 75
+            isNominal = false;
+        }
+    }
+
+    /* --- File I/O -------------------------------------------------------- */
+    ssize_t result = -1;
+    int savedErrno = errno;
+    if (OUT_LENGTH != NULL)
+    {
+        *OUT_LENGTH = 0;
+    }
+    if (isNominal)
+    {
+        *ERRNO = 0;
+        // read() returns the number of bytest read, which may be less than IN_LENGTH if we hit EOF.
+        result = read(entry->fd, MESSAGE_ADDR, static_cast<size_t>(IN_LENGTH));
+        savedErrno = errno;
+    }
+
+    /* --- Result Processing ----------------------------------------------- */
+    if (isNominal && result < 0)
+    {
+        *ERRNO = static_cast<FILE_ERRNO_TYPE>(savedErrno);
+
+        switch(savedErrno)
+        {
+            case EBADF:
+                *RETURN_CODE = INVALID_PARAM;
+                break;
+            case ESTALE:
+            case EIO:
+                *RETURN_CODE = NOT_AVAILABLE;
+                break;
+            default:
+                *RETURN_CODE = NOT_AVAILABLE;
+                break;
+        }
+    }
+    else if (isNominal)
+    {
+        // Success case.
+        *RETURN_CODE = NO_ERROR;
+        *ERRNO = 0;
+        *OUT_LENGTH = static_cast<MESSAGE_SIZE_TYPE>(result);
+    }
+
+    // Entry mutex lock's destructor runs here, unlock iff it acquired the mutex.
     return;
 }
 
