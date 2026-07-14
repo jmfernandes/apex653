@@ -180,7 +180,7 @@ TEST(CheckFileInit, RejectsCallsBeforeInitThenAcceptsAfter) {
     FILE_ERRNO_TYPE err = 0;
     bool isNominal = true;
 
-    if (!g_fileTableInit.load()) {
+    if (g_tableState.load() != TableState::READY) {
         checkFileInit(&rc, &err, isNominal);
         EXPECT_FALSE(isNominal);
         EXPECT_EQ(rc, INVALID_MODE);
@@ -189,7 +189,7 @@ TEST(CheckFileInit, RejectsCallsBeforeInitThenAcceptsAfter) {
 
     RETURN_CODE_TYPE initRc = NO_ERROR;
     apexFileSystemInit(&initRc);
-    ASSERT_TRUE(g_fileTableInit.load());
+    ASSERT_TRUE(g_tableState.load() == TableState::READY);
 
     rc = NO_ERROR;
     err = 0;

@@ -45,22 +45,49 @@ typedef struct
 // initialization, before main() runs, so apexFileSystemInit only needs to reset table contents.
 static InternalFileEntry g_fileTable[MAX_OPEN_FILES];
 static InternalDirEntry g_dirTable[MAX_OPEN_DIRS];
-static std::atomic<bool> g_fileTableInit{false};
-static std::atomic<bool> g_dirTableInit{false};
+
+// Lifecycle of the file/dir tables. Single state variable so there are no
+// illegal intermediate states (e.g. "files ready, dirs not") to reason about.
+enum class TableState : int
+{
+    UNINIT = 0,
+    INITIALIZING = 1,
+    READY = 2
+};
+static std::atomic<TableState> g_tableState{TableState::UNINIT};
 
 void apexFileSystemInit(
     RETURN_CODE_TYPE* RETURN_CODE
 )
     [[post: RETURN_CODE == nullptr || *RETURN_CODE == NO_ERROR || *RETURN_CODE == NO_ACTION]]
-    [[post: RETURN_CODE == nullptr || (g_fileTableInit.load() && g_dirTableInit.load())]]
+    [[post: RETURN_CODE == nullptr || g_tableState.load() == TableState::READY]]
 {
     if (NULL == RETURN_CODE)
     {
         return;
     }
 
-    if (g_fileTableInit.load() && g_dirTableInit.load())
+    // Claim initialization. Exactly one thread ones the transition
+    // UNINIT -> INITIALIZNG; everyone else sees the current state in
+    // 'expected' and reacts to it.
+    TableState expected = TableState::UNINIT;
+    if (!g_tableState.compare_exchange_strong(expected, TableState::INITIALIZING))
     {
+        // We lost the race (or init already happened). Two sub-cases:
+        if (expected == TableState::READY)
+        {
+            *RETURN_CODE = NO_ACTION;
+            return;
+        }
+
+        // expectecd == INITIALIZING: another thread is mid-reset. per ARINC653
+        // this function is a cold-start call and concurrent invocation is a 
+        // caller error, but we fail *safe*: wait for the winner to finish,
+        // then report NO_ACTION rather than touching tables.
+        while (g_tableState.load() != TableState::READY)
+        {
+            // spin; cold-start only
+        }
         *RETURN_CODE = NO_ACTION;
         return;
     }
@@ -75,7 +102,6 @@ void apexFileSystemInit(
         g_fileTable[i].inUse = 0;
         g_fileTable[i].fileName[0] = '\0';
     }
-    g_fileTableInit.store(true);
 
     for (std::size_t i = 0; i < MAX_OPEN_DIRS; i++)
     {
@@ -84,7 +110,7 @@ void apexFileSystemInit(
         g_dirTable[i].inUse = 0;
         g_dirTable[i].dirName[0] = '\0';
     }
-    g_dirTableInit.store(true);
+    g_tableState.store(TableState::READY);
 
     *RETURN_CODE = NO_ERROR;
     return;
@@ -181,7 +207,7 @@ void checkFileInit(RETURN_CODE_TYPE* rc, FILE_ERRNO_TYPE* err, bool& isNominal)
     // established this when isNominal is still true.
     [[pre: !isNominal || rc != nullptr]]
 {
-    if (isNominal && !g_fileTableInit.load())
+    if (isNominal && g_tableState.load() != TableState::READY)
     {
         if (err != NULL)
         {
