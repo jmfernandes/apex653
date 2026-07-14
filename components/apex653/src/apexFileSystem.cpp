@@ -312,7 +312,7 @@ void OPEN_NEW_FILE(FILE_NAME_TYPE FILE_NAME,
 
             /* --- File I/O -------------------------------------------- */
             int fd = -1;
-            int savedErrno = errno;
+            int savedErrno = 0;
             if (isNominal)
             {
                 *ERRNO = 0;
@@ -424,7 +424,7 @@ void CLOSE_FILE(FILE_ID_TYPE FILE_ID,
 
     /* --- File I/O -------------------------------------------------------- */
     ssize_t result = -1;
-    int savedErrno = errno;
+    int savedErrno = 0;
     if (isNominal)
     {
         if (entry->mode == READ_WRITE)
@@ -553,7 +553,7 @@ void READ_FILE(FILE_ID_TYPE FILE_ID,
 
     /* --- File I/O -------------------------------------------------------- */
     ssize_t result = -1;
-    int savedErrno = errno;
+    int savedErrno = 0;
     if (OUT_LENGTH != NULL)
     {
         *OUT_LENGTH = 0;
@@ -663,7 +663,7 @@ void WRITE_FILE(FILE_ID_TYPE FILE_ID,
 
     /* --- File I/O -------------------------------------------------------- */
     ssize_t result = -1;
-    int savedErrno = errno;
+    int savedErrno = 0;
     if (isNominal)
     {
         *ERRNO = 0;
@@ -820,7 +820,7 @@ void SEEK_FILE(
 
     /* --- File I/O -------------------------------------------------------- */
     off_t result = static_cast<off_t>(-1);
-    int savedErrno = errno;
+    int savedErrno = 0;
     if (POSITION != NULL)
     {
         *POSITION = -1;
@@ -908,7 +908,7 @@ void REMOVE_FILE(FILE_NAME_TYPE FILE_NAME,
 
     /* --- File I/O -------------------------------------------------------- */
     int result = -1;
-    int savedErrno = errno;
+    int savedErrno = 0;
     if (isNominal)
     {
         *ERRNO = 0;
