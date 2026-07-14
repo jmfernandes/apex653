@@ -51,6 +51,8 @@ static std::atomic<bool> g_dirTableInit{false};
 void apexFileSystemInit(
     RETURN_CODE_TYPE* RETURN_CODE
 )
+    [[post: RETURN_CODE == nullptr || *RETURN_CODE == NO_ERROR || *RETURN_CODE == NO_ACTION]]
+    [[post: RETURN_CODE == nullptr || (g_fileTableInit.load() && g_dirTableInit.load())]]
 {
     if (NULL == RETURN_CODE)
     {
@@ -91,6 +93,8 @@ void apexFileSystemInit(
 namespace {
 
 void getCurrentCompositeTime(COMPOSITE_TIME_TYPE* ct)
+    [[pre: ct != nullptr]] // internal-only helper; every call site passes &entry->status.*, never null
+    [[post: ct->TM_IS_SET == SET || ct->TM_IS_SET == UNSET]] // always leaves ct fully determined
 {
     time_t now = time(NULL);
 
@@ -124,6 +128,9 @@ void getCurrentCompositeTime(COMPOSITE_TIME_TYPE* ct)
 }
 
 void validateFilename(FILE_NAME_TYPE fileName, RETURN_CODE_TYPE* rc, FILE_ERRNO_TYPE* err, bool& isNominal)
+    // Unlike checkFileInit, every branch here writes both *rc and *err unconditionally, so both
+    // must be non-null whenever isNominal is still true on entry.
+    [[pre: !isNominal || (rc != nullptr && err != nullptr)]]
 {
     if (!isNominal)
     {
@@ -169,6 +176,10 @@ void validateFilename(FILE_NAME_TYPE fileName, RETURN_CODE_TYPE* rc, FILE_ERRNO_
 }
 
 void checkFileInit(RETURN_CODE_TYPE* rc, FILE_ERRNO_TYPE* err, bool& isNominal)
+    // Only rc is required non-null here (this function itself null-checks err defensively
+    // before writing through it); always called after checkNullParameters has already
+    // established this when isNominal is still true.
+    [[pre: !isNominal || rc != nullptr]]
 {
     if (isNominal && !g_fileTableInit.load())
     {
@@ -183,6 +194,9 @@ void checkFileInit(RETURN_CODE_TYPE* rc, FILE_ERRNO_TYPE* err, bool& isNominal)
 }
 
 void checkNullParameters(RETURN_CODE_TYPE* rc, FILE_ERRNO_TYPE* err, bool& isNominal)
+    // Establishes the guarantee every later validator in the chain relies on as its own
+    // precondition: once this leaves isNominal true, rc and err are both safe to dereference.
+    [[post: !isNominal || (rc != nullptr && err != nullptr)]]
 {
     if (NULL == rc)
     {
@@ -220,6 +234,10 @@ struct FreeSlot
 // equivalent directory-open function later — both g_fileTable and g_dirTable satisfy TableEntry.
 template <TableEntry Entry>
 [[nodiscard]] std::optional<FreeSlot<Entry>> findFreeSlot(Entry* table, std::size_t count)
+    [[pre: table != nullptr]] // internal-only helper; always called with g_fileTable/g_dirTable
+    [[post r: !r.has_value() || (r->index < count && r->lock.owns_lock())]] // returned slot, if
+                                                                             // any, is in-bounds
+                                                                             // and genuinely held
 {
     for (std::size_t i = 0; i < count; i++)
     {
@@ -243,6 +261,8 @@ void OPEN_NEW_FILE(FILE_NAME_TYPE FILE_NAME,
     FILE_ID_TYPE *FILE_ID,
     RETURN_CODE_TYPE *RETURN_CODE,
     FILE_ERRNO_TYPE *ERRNO)
+    // Never report success alongside a stale/nonzero errno.
+    [[post: RETURN_CODE == nullptr || ERRNO == nullptr || *RETURN_CODE != NO_ERROR || *ERRNO == 0]]
 {
     /* --- Parameter Validation -------------------------------------------- */
     bool isNominal = true;
@@ -361,6 +381,7 @@ void OPEN_NEW_FILE(FILE_NAME_TYPE FILE_NAME,
 void CLOSE_FILE(FILE_ID_TYPE FILE_ID,
     RETURN_CODE_TYPE *RETURN_CODE,
     FILE_ERRNO_TYPE* ERRNO)
+    [[post: RETURN_CODE == nullptr || ERRNO == nullptr || *RETURN_CODE != NO_ERROR || *ERRNO == 0]]
 {
     /* --- Parameter Validation -------------------------------------------- */
     bool isNominal = true;
@@ -452,6 +473,7 @@ void READ_FILE(FILE_ID_TYPE FILE_ID,
     MESSAGE_SIZE_TYPE *OUT_LENGTH,
     RETURN_CODE_TYPE *RETURN_CODE,
     FILE_ERRNO_TYPE *ERRNO)
+    [[post: RETURN_CODE == nullptr || ERRNO == nullptr || *RETURN_CODE != NO_ERROR || *ERRNO == 0]]
 {
     /* --- Parameter Validation -------------------------------------------- */
     bool isNominal = true;
@@ -580,6 +602,7 @@ void WRITE_FILE(FILE_ID_TYPE FILE_ID,
     MESSAGE_SIZE_TYPE LENGTH,
     RETURN_CODE_TYPE *RETURN_CODE,
     FILE_ERRNO_TYPE *ERRNO)
+    [[post: RETURN_CODE == nullptr || ERRNO == nullptr || *RETURN_CODE != NO_ERROR || *ERRNO == 0]]
 {
     /* --- Parameter Validation -------------------------------------------- */
     bool isNominal = true;
@@ -695,6 +718,7 @@ void SEEK_FILE(
     FILE_SIZE_TYPE* POSITION,
     RETURN_CODE_TYPE* RETURN_CODE,
     FILE_ERRNO_TYPE* ERRNO)
+    [[post: RETURN_CODE == nullptr || ERRNO == nullptr || *RETURN_CODE != NO_ERROR || *ERRNO == 0]]
 {
     /* --- Parameter Validation -------------------------------------------- */
     bool isNominal = true;
@@ -859,6 +883,7 @@ void SEEK_FILE(
 void REMOVE_FILE(FILE_NAME_TYPE FILE_NAME,
     RETURN_CODE_TYPE *RETURN_CODE,
     FILE_ERRNO_TYPE *ERRNO)
+    [[post: RETURN_CODE == nullptr || ERRNO == nullptr || *RETURN_CODE != NO_ERROR || *ERRNO == 0]]
 {
     /* --- Parameter Validation -------------------------------------------- */
     bool isNominal = true;
